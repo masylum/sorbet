@@ -49,7 +49,8 @@ public:
                 std::shared_ptr<absl::Mutex> epochMutex = std::make_shared<absl::Mutex>(),
                 std::shared_ptr<std::atomic<u4>> currentlyProcessingLSPEpoch = std::make_shared<std::atomic<u4>>(0),
                 std::shared_ptr<std::atomic<u4>> lspEpochInvalidator = std::make_shared<std::atomic<u4>>(0),
-                std::shared_ptr<std::atomic<u4>> lastCommittedLSPEpoch = std::make_shared<std::atomic<u4>>(0));
+                std::shared_ptr<std::atomic<u4>> lastCommittedLSPEpoch = std::make_shared<std::atomic<u4>>(0),
+                std::shared_ptr<absl::Mutex> typecheckMutex = std::make_shared<absl::Mutex>());
 
     void initEmpty();
     void installIntrinsics();
@@ -227,6 +228,15 @@ public:
     bool hasAnyDslPlugin() const;
 
     std::vector<std::unique_ptr<pipeline::semantic_extension::SemanticExtension>> semanticExtensions;
+    // In LSP mode: Used to pre-empt typechecking. Grabbed as a:
+    // - writer lock during the critical section of typechecking (e.g., indexer/resolver steps).
+    // - reader lock during non-critical section of typechecking (i.e., post-resolver steps).
+    // - writer lock during queries / fast path typechecking
+    // During the non-critical section of typechecking, threads routinely give up and re-acquire the lock to allow
+    // other requests to pre-empt long typechecking operations.
+    const std::shared_ptr<absl::Mutex> typecheckMutex;
+    // Lambda to run when pre-empting typechecking.
+    std::shared_ptr<std::function<void()>> preemptFunction;
 
 private:
     bool shouldReportErrorOn(Loc loc, ErrorClass what) const;

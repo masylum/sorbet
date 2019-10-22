@@ -42,6 +42,9 @@ TypecheckRun LSPTypechecker::runTypechecking(LSPFileUpdates updates) const {
     ENFORCE(gs->lspTypecheckCount > 0,
             "Tried to run fast path with a GlobalState object that never had inferencer and resolver runs.");
 
+    // TODO: Need to eagerly replace GS and roll back if pre-empted!
+    // TODO: Need to eagerly update index too!
+
     if (!updates.canTakeFastPath) {
         return runSlowPath(move(updates), true);
     }
@@ -132,7 +135,8 @@ updateFile(unique_ptr<core::GlobalState> gs, const shared_ptr<core::File> &file,
 }
 } // namespace
 
-TypecheckRun LSPTypechecker::runSlowPath(LSPFileUpdates updates, bool isCancelable) const {
+TypecheckRun LSPTypechecker::runSlowPath(LSPFileUpdates updates, bool isCancelable,
+                                         unique_ptr<absl::MutexLock> typecheckLock) const {
     ENFORCE(this_thread::get_id() == typecheckerThreadId,
             "runSlowPath can only be called from the typechecker thread.");
 
@@ -153,6 +157,47 @@ TypecheckRun LSPTypechecker::runSlowPath(LSPFileUpdates updates, bool isCancelab
     // Replace error queue with one that is owned by this thread.
     finalGS->errorQueue = make_shared<core::ErrorQueue>(finalGS->errorQueue->logger, finalGS->errorQueue->tracer);
     finalGS->errorQueue->ignoreFlushes = true;
+
+    // Back up old state in case this slow path gets canceled.
+    // We can move these two, as they are unconditionally overwritten by the slow path.
+    auto oldGs = move(gs);
+    auto oldIndexedFinalGS = std::move(indexedFinalGS);
+    // Copy these, as they will be updated by slow path + any fast paths that preempt.
+    // TODO: To reduce overhead, could make an undo log...?
+    auto oldHashes = globalStateHashes;
+    // TODO2: Do I have to even roll this back?
+    // Yes; need to undo any new indexedFinalGS changes :|
+    // But I need to promote things from old index to new indexedFinalGS -- can't toss away, as they've been committed
+    // to initialGS.
+    // So I don't replace indexed necessarily, I just add things in old indexedFinalGS for items in new indexedFinalGS
+    // with contents from old indexed!
+    // So, for every pre-emptive fast path update, track:
+    // - Old AST
+    // - Old hash
+    // Pop into a map if a slow path is running. Don't pop into a map if already in map...?? What if new file...???
+    // ==> new file takes slow path tho
+    // ==> NOTE: For pre-emption, need to unset a bunch of cancelation stuff in GS...
+    // ==> Can we use the same data structure to figure out which files to suppress errors for? (Yes; just look at
+    // indexedFinalGS...)
+    //
+    // Could I have some type of CoW vector that tracks file + version?
+    // What happens if we roll back and *then* roll forward?
+    // AH CAN'T DO THAT. DO WE ALREADY HAVE A BUG???
+    // indexed: v1, v1, v1
+    // => try to commit v2, v2, v2
+    // => cancel
+    // => commit v3, v3, v3
+    // works because v3 overwrites all canceled things.
+    // EXCEPT IN SLOW CANCEL SLOW AHA
+    // Bug:
+    // try to commit v1, v1, v1
+    // cancel for v2, v2
+    // don't update tree for v1!!!
+    // race: preempt is waiting when cancelation happens.
+    // ==> Solution: Before finishing cancelation, preempt for everything waiting.
+    auto oldIndexed = indexed;
+    auto oldFilesThatHaveErrors = filesThatHaveErrors;
+
     // Note: Commits can only be canceled if this edit is cancelable, LSP is running across multiple threads, and the
     // cancelation feature is enabled.
     const bool committed = finalGS->tryCommitEpoch(updates.versionEnd, isCancelable, [&]() -> void {
@@ -200,7 +245,11 @@ TypecheckRun LSPTypechecker::runSlowPath(LSPFileUpdates updates, bool isCancelab
         if (finalGS->sleepInSlowPath) {
             Timer::timedSleep(3000ms, *logger, "slow_path.typecheck.sleep");
         }
-        pipeline::typecheck(finalGS, move(resolved), config->opts, config->workers);
+
+        const bool isPreemptible = typecheckLock != nullptr;
+        // If preemptible, drop the writer lock before proceeding to typecheck to let other requests pre-empt.
+        typecheckLock = nullptr;
+        pipeline::typecheck(finalGS, move(resolved), config->opts, config->workers, isPreemptible);
     });
 
     auto out = finalGS->errorQueue->drainWithQueryResponses();
@@ -375,8 +424,7 @@ void LSPTypechecker::commitTypecheckRun(TypecheckRun run) {
     if (run.newGS.has_value()) {
         gs = move(run.newGS.value());
     }
-
-    return pushDiagnostics(move(run));
+    pushDiagnostics(move(run));
 }
 
 unique_ptr<core::GlobalState> LSPTypechecker::destroy() {

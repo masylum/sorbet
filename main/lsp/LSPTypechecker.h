@@ -56,25 +56,27 @@ class LSPTypechecker final {
     UnorderedMap<int, ast::ParsedFile> indexedFinalGS;
     /** Hashes of global states obtained by resolving every file in isolation. Used for fastpath. */
     std::vector<core::FileHash> globalStateHashes;
-    /** List of files that have had errors in last run*/
+    /** List of files that had errors in last run*/
     std::vector<core::FileRef> filesThatHaveErrors;
     std::unique_ptr<KeyValueStore> kvstore; // always null for now.
 
     std::shared_ptr<const LSPConfiguration> config;
 
     /** Conservatively reruns entire pipeline without caching any trees. If canceled, returns a TypecheckRun containing
-     * the previous global state. */
-    TypecheckRun runSlowPath(LSPFileUpdates updates, bool cancelable) const;
+     * the previous global state. If `typecheckLock` is specified, then this operation is pre-emptible. */
+    TypecheckRun runSlowPath(LSPFileUpdates updates, bool cancelable,
+                             std::unique_ptr<absl::MutexLock> typecheckLock = nullptr);
     /** Runs typechecking on the provided updates. */
-    TypecheckRun runTypechecking(LSPFileUpdates updates) const;
+    TypecheckRun runTypechecking(LSPFileUpdates updates);
 
     /**
      * Sends diagnostics from a typecheck run to the client.
      */
     void pushDiagnostics(TypecheckRun run);
 
-    /** Officially 'commits' the output of a `TypecheckRun` by updating the relevant state on LSPLoop and, if specified,
-     * sending diagnostics to the editor. */
+    /**
+     * TODO: Document.
+     */
     void commitTypecheckRun(TypecheckRun run);
 
 public:

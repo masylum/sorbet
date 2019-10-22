@@ -49,9 +49,9 @@ const int Symbols::MAX_PROC_ARITY;
 
 GlobalState::GlobalState(shared_ptr<ErrorQueue> errorQueue, shared_ptr<absl::Mutex> epochMutex,
                          shared_ptr<atomic<u4>> currentlyProcessingLSPEpoch, shared_ptr<atomic<u4>> lspEpochInvalidator,
-                         shared_ptr<atomic<u4>> lastCommittedLSPEpoch)
+                         shared_ptr<atomic<u4>> lastCommittedLSPEpoch, shared_ptr<absl::Mutex> typecheckMutex)
     : globalStateId(globalStateIdCounter.fetch_add(1)), errorQueue(std::move(errorQueue)),
-      lspQuery(lsp::Query::noQuery()), epochMutex(std::move(epochMutex)),
+      lspQuery(lsp::Query::noQuery()), typecheckMutex(typecheckMutex), epochMutex(std::move(epochMutex)),
       currentlyProcessingLSPEpoch(move(currentlyProcessingLSPEpoch)), lspEpochInvalidator(move(lspEpochInvalidator)),
       lastCommittedLSPEpoch(move(lastCommittedLSPEpoch)) {
     // Empirically determined to be the smallest powers of two larger than the
@@ -1291,8 +1291,9 @@ bool GlobalState::unfreezeSymbolTable() {
 unique_ptr<GlobalState> GlobalState::deepCopy(bool keepId) const {
     Timer timeit(tracer(), "GlobalState::deepCopy", this->creation);
     this->sanityCheck();
-    auto result = make_unique<GlobalState>(this->errorQueue, this->epochMutex, this->currentlyProcessingLSPEpoch,
-                                           this->lspEpochInvalidator, this->lastCommittedLSPEpoch);
+    auto result =
+        make_unique<GlobalState>(this->errorQueue, this->epochMutex, this->currentlyProcessingLSPEpoch,
+                                 this->lspEpochInvalidator, this->lastCommittedLSPEpoch, this->typecheckMutex);
 
     result->silenceErrors = this->silenceErrors;
     result->autocorrect = this->autocorrect;

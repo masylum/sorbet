@@ -32,7 +32,7 @@ std::vector<ast::ParsedFile> name(core::GlobalState &gs, std::vector<ast::Parsed
                                   const options::Options &opts, bool skipConfigatron = false);
 
 ast::ParsedFilesOrCancelled typecheck(std::unique_ptr<core::GlobalState> &gs, std::vector<ast::ParsedFile> what,
-                                      const options::Options &opts, WorkerPool &workers);
+                                      const options::Options &opts, WorkerPool &workers, bool preemptible = false);
 
 ast::ParsedFile typecheckOne(core::Context ctx, ast::ParsedFile resolved, const options::Options &opts);
 
