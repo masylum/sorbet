@@ -11,6 +11,7 @@
 #include <algorithm> // find_if, sort
 
 #include "absl/strings/str_cat.h"
+#include "absl/strings/str_split.h"
 
 template class std::vector<sorbet::core::SymbolRef>;
 using namespace std;
@@ -171,7 +172,8 @@ unique_ptr<Error> matchArgType(Context ctx, TypeConstraint &constr, Loc callLoc,
         if (!withoutNil->isBottom() &&
             Types::isSubTypeUnderConstraint(ctx, constr, withoutNil, expectedType, UntypedMode::AlwaysCompatible)) {
             if (loc.exists()) {
-                e.replaceWith("Wrap in `T.must`", loc, "Opus::SorbetMigrations::AttachedClassMigration.must({})", loc.source(ctx));
+                e.replaceWith("Wrap in `T.must`", loc, "Opus::SorbetMigrations::AttachedClassMigration.must({})",
+                              loc.source(ctx));
             }
         }
         return e.build();
@@ -455,6 +457,97 @@ optional<core::AutocorrectSuggestion> maybeSuggestExtendTHelpers(core::Context c
         {core::AutocorrectSuggestion::Edit{nextLineLoc.value(), fmt::format("{}extend T::Helpers\n", prefix)}}};
 }
 
+core::Loc computeKWArgLocation(const GlobalState &gs, Loc kwArgsLoc, ShapeType *hash, LiteralType *key) {
+    // find the location of arg within kwArgsLoc by looking for `arg:` in the
+    // region of the kwArgsLoc
+    auto source = kwArgsLoc.source(gs);
+
+    auto keyStr = NameRef(gs, key->value).data(gs)->show(gs) + ":";
+
+    // split on the key name plus a `:`
+    vector<string> splits = absl::StrSplit(source, absl::MaxSplits(keyStr, 1));
+    if (splits.empty()) {
+        return Loc::none();
+    }
+
+    auto [start, end] = kwArgsLoc.position(gs);
+    u4 startOff = Loc::pos2Offset(kwArgsLoc.file().data(gs), start).value() + splits[0].size() + keyStr.size();
+    u4 endOff = startOff;
+
+    u4 parens = 0, braces = 0, brackets = 0;
+    bool leadingSpace = true, quotes = false, dquotes = false;
+    for (auto chr : splits.back()) {
+        if (chr != ' ') {
+            leadingSpace = false;
+        }
+
+        if (leadingSpace) {
+            ++startOff;
+        }
+
+        ++endOff;
+
+        // no need to perform any handling if we're inside a string
+        if (quotes) {
+            if (chr == '\'') {
+                quotes = false;
+            }
+            continue;
+        }
+
+        if (dquotes) {
+            if (chr == '"') {
+                dquotes = false;
+            }
+            continue;
+        }
+
+        // update state
+        switch (chr) {
+            case '(':
+                parens++;
+                continue;
+            case ')':
+                parens--;
+                continue;
+            case '{':
+                braces++;
+                continue;
+            case '}':
+                braces--;
+                continue;
+            case '[':
+                brackets++;
+                continue;
+            case ']':
+                brackets--;
+                continue;
+            case '\'':
+                quotes = true;
+                continue;
+            case '"':
+                dquotes = true;
+                continue;
+        }
+
+        if (chr == ',' && parens == 0 && braces == 0) {
+            // walk the position back before the comma
+            endOff--;
+            break;
+        }
+    }
+
+    auto loc = Loc::fromDetails(gs, kwArgsLoc.file(), Loc::offset2Pos(kwArgsLoc.file().data(gs), startOff),
+                                Loc::offset2Pos(kwArgsLoc.file().data(gs), endOff));
+
+    if (loc.has_value()) {
+        auto tmp = loc.value();
+        return tmp;
+    } else {
+        return Loc::none();
+    }
+}
+
 // This implements Ruby's argument matching logic (assigning values passed to a
 // method call to formal parameters of the method).
 //
@@ -515,7 +608,9 @@ DispatchResult dispatchCallSymbol(Context ctx, DispatchArgs args,
                 }
             }
             if (args.fullType.get() != thisType && symbol == Symbols::NilClass()) {
-                e.replaceWith("Wrap in `T.must`", args.locs.receiver, "Opus::SorbetMigrations::AttachedClassMigration.must({})", args.locs.receiver.source(ctx));
+                e.replaceWith("Wrap in `T.must`", args.locs.receiver,
+                              "Opus::SorbetMigrations::AttachedClassMigration.must({})",
+                              args.locs.receiver.source(ctx));
             } else {
                 if (symbol.data(ctx)->isClassOrModuleModule()) {
                     auto objMeth = core::Symbols::Object().data(ctx)->findMemberTransitive(ctx, args.name);
@@ -687,6 +782,9 @@ DispatchResult dispatchCallSymbol(Context ctx, DispatchArgs args,
         auto &hashArg = *(aend - 1);
         auto hashArgType = Types::approximate(ctx, hashArg->type, *constr);
 
+        // Location information for the entire hash
+        auto kwLoc = args.locs.args[ait - args.args.begin()];
+
         // find keyword arguments and advance `pend` before them; We'll walk
         // `kwit` ahead below
         auto kwit = pit;
@@ -722,8 +820,9 @@ DispatchResult dispatchCallSymbol(Context ctx, DispatchArgs args,
                         tpe.origins = args.args.back()->origins;
                         auto offset = it - hash->keys.begin();
                         tpe.type = hash->values[offset];
-                        if (auto e = matchArgType(ctx, *constr, args.locs.call, args.locs.receiver, symbol, method, tpe,
-                                                  spec, args.selfType, targs, Loc::none())) {
+                        if (auto e =
+                                matchArgType(ctx, *constr, args.locs.call, args.locs.receiver, symbol, method, tpe,
+                                             spec, args.selfType, targs, computeKWArgLocation(ctx, kwLoc, hash, key))) {
                             result.main.errors.emplace_back(std::move(e));
                         }
                     }
@@ -750,7 +849,8 @@ DispatchResult dispatchCallSymbol(Context ctx, DispatchArgs args,
                 auto offset = arg - hash->keys.begin();
                 tpe.type = hash->values[offset];
                 if (auto e = matchArgType(ctx, *constr, args.locs.call, args.locs.receiver, symbol, method, tpe, spec,
-                                          args.selfType, targs, Loc::none())) {
+                                          args.selfType, targs,
+                                          computeKWArgLocation(ctx, kwLoc, hash, cast_type<LiteralType>(arg->get())))) {
                     result.main.errors.emplace_back(std::move(e));
                 }
             }
