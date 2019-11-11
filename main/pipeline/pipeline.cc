@@ -925,12 +925,30 @@ ast::ParsedFilesOrCancelled resolve(unique_ptr<core::GlobalState> &gs, vector<as
     return ast::ParsedFilesOrCancelled(move(what));
 }
 
+namespace {
+void tryPreempt(core::GlobalState &gs) {
+    auto preemptFunction = atomic_load(&gs.preemptFunction);
+    if (preemptFunction != nullptr) {
+        // Capture with write lock before running lambda. Ensures that all worker threads park
+        // before we proceed.
+        absl::MutexLock lock(gs.typecheckMutex.get());
+        (*preemptFunction)();
+        atomic_store(&gs.preemptFunction, make_shared<function<void()>>(nullptr));
+    }
+}
+} // namespace
+
 ast::ParsedFilesOrCancelled typecheck(unique_ptr<core::GlobalState> &gs, vector<ast::ParsedFile> what,
                                       const options::Options &opts, WorkerPool &workers, bool preemptible) {
     vector<ast::ParsedFile> typecheck_result;
 
     {
         Timer timeit(gs->tracer(), "typecheck");
+
+        if (preemptible) {
+            // Before kicking off typechecking, check if we need to preempt.
+            tryPreempt(*gs);
+        }
 
         shared_ptr<ConcurrentBoundedQueue<ast::ParsedFile>> fileq;
         shared_ptr<BlockingBoundedQueue<typecheck_thread_result>> resultq;
@@ -1002,14 +1020,7 @@ ast::ParsedFilesOrCancelled typecheck(unique_ptr<core::GlobalState> &gs, vector<
                     }
 
                     if (preemptible) {
-                        auto preemptFunction = atomic_load(&gs->preemptFunction);
-                        if (preemptFunction != nullptr) {
-                            // Capture with write lock before running lambda. Ensures that all worker threads park
-                            // before we proceed.
-                            absl::MutexLock lock(gs->typecheckMutex.get());
-                            (*preemptFunction)();
-                            atomic_store(&gs->preemptFunction, make_shared<function<void()>>(nullptr));
-                        }
+                        tryPreempt(*gs);
                     }
                 }
             }
@@ -1128,7 +1139,7 @@ core::UsageHash getAllNames(const core::GlobalState &gs, unique_ptr<ast::Express
     return move(collector.acc);
 };
 
-core::FileHash computeFileHash(shared_ptr<core::File> forWhat, spdlog::logger &logger) {
+core::FileHash computeFileHash(u4 version, shared_ptr<core::File> forWhat, spdlog::logger &logger) {
     Timer timeit(logger, "computeFileHash");
     const static options::Options emptyOpts{};
     unique_ptr<core::GlobalState> lgs = make_unique<core::GlobalState>((make_shared<core::ErrorQueue>(logger, logger)));
@@ -1150,7 +1161,7 @@ core::FileHash computeFileHash(shared_ptr<core::File> forWhat, spdlog::logger &l
     auto workers = WorkerPool::create(0, lgs->tracer());
     pipeline::resolve(lgs, move(single), emptyOpts, *workers, true);
 
-    return {move(*lgs->hash()), move(allNames)};
+    return {version, move(*lgs->hash()), move(allNames)};
 }
 
 } // namespace sorbet::realmain::pipeline

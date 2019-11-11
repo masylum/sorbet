@@ -117,11 +117,12 @@ vector<ast::ParsedFile> TimeTravelingGlobalState::indexFromFileSystem() {
         // (Note: Flushing is disabled in LSP mode, so we have to drain.)
         gs->errorQueue->drainWithQueryResponses();
     }
-    globalStateHashes = computeStateHashes(gs->getFiles());
+    globalStateHashes = computeStateHashes(0, gs->getFiles());
     return indexed;
 }
 
-vector<core::FileHash> TimeTravelingGlobalState::computeStateHashes(const vector<shared_ptr<core::File>> &files) const {
+vector<core::FileHash> TimeTravelingGlobalState::computeStateHashes(u4 version,
+                                                                    const vector<shared_ptr<core::File>> &files) const {
     Timer timeit(config->logger, "computeStateHashes");
     vector<core::FileHash> res(files.size());
     shared_ptr<ConcurrentBoundedQueue<int>> fileq = make_shared<ConcurrentBoundedQueue<int>>(files.size());
@@ -137,7 +138,7 @@ vector<core::FileHash> TimeTravelingGlobalState::computeStateHashes(const vector
 
     shared_ptr<BlockingBoundedQueue<vector<pair<int, core::FileHash>>>> resultq =
         make_shared<BlockingBoundedQueue<vector<pair<int, core::FileHash>>>>(files.size());
-    config->workers.multiplexJob("lspStateHash", [fileq, resultq, files, &logger]() {
+    config->workers.multiplexJob("lspStateHash", [fileq, resultq, files, version, &logger]() {
         vector<pair<int, core::FileHash>> threadResult;
         int processedByThread = 0;
         int job;
@@ -150,7 +151,7 @@ vector<core::FileHash> TimeTravelingGlobalState::computeStateHashes(const vector
                         threadResult.emplace_back(job, core::FileHash{});
                         continue;
                     }
-                    auto hash = pipeline::computeFileHash(files[job], logger);
+                    auto hash = pipeline::computeFileHash(version, files[job], logger);
                     threadResult.emplace_back(job, move(hash));
                 }
             }
@@ -190,7 +191,7 @@ void TimeTravelingGlobalState::pruneBefore(u4 version) {
 void TimeTravelingGlobalState::commitEdits(LSPFileUpdates &update) {
     Timer timeit(config->logger, "ttgs_commit_edits");
     // Hash changes.
-    update.updatedFileHashes = computeStateHashes(update.updatedFiles);
+    update.updatedFileHashes = computeStateHashes(update.versionEnd, update.updatedFiles);
     update.canTakeFastPath = canTakeFastPath(latestVersion, update);
 
     TimeTravelUpdate newUpdate{update.versionEnd, update.hasNewFiles};

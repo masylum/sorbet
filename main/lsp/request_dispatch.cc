@@ -20,8 +20,9 @@ void LSPLoop::processRequest(std::unique_ptr<LSPMessage> msg) {
 void LSPLoop::processRequests(vector<unique_ptr<LSPMessage>> messages) {
     QueueState state;
     absl::Mutex mutex;
+    absl::Mutex cancelMutex;
     for (auto &message : messages) {
-        preprocessor.preprocessAndEnqueue(state, move(message), mutex);
+        preprocessor.preprocessAndEnqueue(state, move(message), mutex, cancelMutex);
     }
     ENFORCE(state.paused == false, "__PAUSE__ not supported in single-threaded mode.");
     for (auto &message : state.pendingRequests) {

@@ -275,6 +275,10 @@ private:
     // containing edits (lastCommittedLSPEpoch, currentlyProcessingLSPEpoch].
     const std::shared_ptr<std::atomic<u4>> lastCommittedLSPEpoch;
 
+    // In LSP mode: Tracks the latest edit version ever typechecked on this GlobalState. Used to ENFORCE that we don't
+    // attempt to typecheck parsed files created for a later edit.
+    u4 latestTypecheckedEditVersion;
+
     bool freezeSymbolTable();
     bool freezeNameTable();
     bool freezeFileTable();

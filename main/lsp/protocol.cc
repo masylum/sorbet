@@ -114,13 +114,14 @@ void tagNewRequest(const std::shared_ptr<spd::logger> &logger, LSPMessage &msg) 
     msg.timer = make_unique<Timer>(logger, "processing_time");
 }
 
-unique_ptr<Joinable> LSPPreprocessor::runPreprocessor(QueueState &incomingQueue, absl::Mutex &incomingMtx,
-                                                      QueueState &processingQueue, absl::Mutex &processingMtx) {
+unique_ptr<Joinable> LSPPreprocessor::runPreprocessor(QueueState &incomingQ, absl::Mutex &incomingMtx,
+                                                      QueueState &processingQ, absl::Mutex &processingMtx,
+                                                      absl::Mutex &cancelMtx) {
     ENFORCE(owner == this_thread::get_id());
-    return runInAThread("lspPreprocess", [this, &incomingQueue, &incomingMtx, &processingQueue, &processingMtx] {
+    return runInAThread("lspPreprocess", [this, &incomingQ, &incomingMtx, &processingQ, &processingMtx, &cancelMtx] {
         // Propagate the termination flag across the two queues.
-        NotifyOnDestruction notifyIncoming(incomingMtx, incomingQueue.terminate);
-        NotifyOnDestruction notifyProcessing(processingMtx, processingQueue.terminate);
+        NotifyOnDestruction notifyIncoming(incomingMtx, incomingQ.terminate);
+        NotifyOnDestruction notifyProcessing(processingMtx, processingQ.terminate);
         ttgs.switchToNewThread();
         owner = this_thread::get_id();
         while (true) {
@@ -131,27 +132,27 @@ unique_ptr<Joinable> LSPPreprocessor::runPreprocessor(QueueState &incomingQueue,
                     +[](QueueState *incomingQueue) -> bool {
                         return incomingQueue->terminate || !incomingQueue->pendingRequests.empty();
                     },
-                    &incomingQueue));
+                    &incomingQ));
                 // Only terminate once incoming queue is drained.
-                if (incomingQueue.terminate && incomingQueue.pendingRequests.empty()) {
+                if (incomingQ.terminate && incomingQ.pendingRequests.empty()) {
                     config->logger->debug("Preprocessor terminating");
                     return;
                 }
-                msg = move(incomingQueue.pendingRequests.front());
-                incomingQueue.pendingRequests.pop_front();
+                msg = move(incomingQ.pendingRequests.front());
+                incomingQ.pendingRequests.pop_front();
                 // Combine counters with this thread's counters.
-                if (!incomingQueue.counters.hasNullCounters()) {
-                    counterConsume(move(incomingQueue.counters));
+                if (!incomingQ.counters.hasNullCounters()) {
+                    counterConsume(move(incomingQ.counters));
                 }
             }
 
-            preprocessAndEnqueue(processingQueue, move(msg), processingMtx);
+            preprocessAndEnqueue(processingQ, move(msg), processingMtx, cancelMtx);
 
             {
                 absl::MutexLock lck(&processingMtx);
                 // Merge the counters from all of the worker threads with those stored in
                 // processingQueue.
-                processingQueue.counters = mergeCounters(move(processingQueue.counters));
+                processingQ.counters = mergeCounters(move(processingQ.counters));
             }
         }
     });
@@ -170,7 +171,7 @@ void LSPLoop::maybeStartCommitSlowPathEdit(const LSPMessage &msg) const {
 }
 
 optional<unique_ptr<core::GlobalState>> LSPLoop::runLSP(int inputFd) {
-    // Naming convention: thread that executes this function is called typechecking thread
+    // Naming convention: thread that executes this function is called coordinator thread
 
     // Incoming queue stores requests that arrive from the client and Watchman. No preprocessing is performed on
     // these messages (e.g., edits are not merged).
@@ -184,6 +185,10 @@ optional<unique_ptr<core::GlobalState>> LSPLoop::runLSP(int inputFd) {
     // Processing queue contains preprocessed messages that are ready to be processed (e.g., edits are merged).
     absl::Mutex processingMtx;
     QueueState processingQueue;
+
+    // Mutex that must be held in order to cancel the slow path. The coordinator thread holds it while processing
+    // messages to avoid races with the typechecking thread.
+    absl::Mutex cancelMtx;
 
     auto typecheckThread = typecheckerCoord.startTypecheckerThread();
 
@@ -258,7 +263,8 @@ optional<unique_ptr<core::GlobalState>> LSPLoop::runLSP(int inputFd) {
     });
 
     // Bridges the gap between the {reader, watchman} threads and the typechecking thread.
-    auto preprocessingThread = preprocessor.runPreprocessor(incomingQueue, incomingMtx, processingQueue, processingMtx);
+    auto preprocessingThread =
+        preprocessor.runPreprocessor(incomingQueue, incomingMtx, processingQueue, processingMtx, cancelMtx);
 
     mainThreadId = this_thread::get_id();
     {
@@ -270,6 +276,8 @@ optional<unique_ptr<core::GlobalState>> LSPLoop::runLSP(int inputFd) {
         while (true) {
             unique_ptr<LSPMessage> msg;
             bool hasMoreMessages;
+            // Holds the cancelation lock while processing a message.
+            unique_ptr<absl::MutexLock> cancelLock;
             {
                 absl::MutexLock lck(&processingMtx);
                 Timer timeit(logger, "idle");
@@ -295,6 +303,7 @@ optional<unique_ptr<core::GlobalState>> LSPLoop::runLSP(int inputFd) {
                 hasMoreMessages = !processingQueue.pendingRequests.empty();
                 exitProcessed = msg->isNotification() && msg->method() == LSPMethod::Exit;
                 maybeStartCommitSlowPathEdit(*msg);
+                cancelLock = make_unique<absl::MutexLock>(&cancelMtx);
             }
             prodCounterInc("lsp.messages.received");
             processRequestInternal(*msg);

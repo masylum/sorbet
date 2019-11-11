@@ -43,8 +43,8 @@ LSPPreprocessor::LSPPreprocessor(unique_ptr<core::GlobalState> initialGS, const 
     : ttgs(TimeTravelingGlobalState(config, move(initialGS), initialVersion)), config(config),
       owner(this_thread::get_id()), nextVersion(initialVersion + 1) {}
 
-void LSPPreprocessor::mergeFileChanges(absl::Mutex &mtx, QueueState &state) {
-    mtx.AssertHeld();
+void LSPPreprocessor::mergeFileChanges(absl::Mutex &stateMtx, QueueState &state, absl::Mutex &cancelMutex) {
+    stateMtx.AssertHeld();
     auto &logger = config->logger;
     // mergeFileChanges is the most expensive operation this thread performs while holding the mutex lock.
     Timer timeit(logger, "lsp.mergeFileChanges");
@@ -97,28 +97,32 @@ void LSPPreprocessor::mergeFileChanges(absl::Mutex &mtx, QueueState &state) {
 
         // Avoid canceling if the currently-running slow path has already been canceled.
         if (!gs.wasTypecheckingCanceled()) {
-            for (auto it = pendingRequests.begin(); it != pendingRequests.end(); it++) {
-                const auto &msg = *it;
+            for (auto &msg : pendingRequests) {
                 if (msg->isNotification() && msg->method() == LSPMethod::SorbetWorkspaceEdit) {
                     Timer timeit(logger, "tryCancelSlowPath");
                     auto &params = get<unique_ptr<SorbetWorkspaceEditParams>>(msg->asNotification().params);
                     auto combinedUpdates = ttgs.getCombinedUpdates(committed + 1, params->updates.versionEnd);
                     // Cancel if combined updates end up taking the fast path, or if the new updates will just take the
                     // slow path a second time when the current slow path finishes.
-                    if ((combinedUpdates.canTakeFastPath || !params->updates.canTakeFastPath) &&
-                        gs.tryCancelSlowPath(params->updates.versionEnd)) {
-                        if (combinedUpdates.canTakeFastPath) {
-                            logger->debug(
-                                "[Preprocessor] Canceling typechecking, as edits {} thru {} can take fast path.",
-                                combinedUpdates.versionStart, combinedUpdates.versionEnd);
-                        } else {
-                            logger->debug(
-                                "[Preprocessor] Canceling typechecking, as new edits {} thru {} will just take "
-                                "the slow path again.",
-                                params->updates.versionStart, params->updates.versionEnd);
-                            combinedUpdates.updatedGS = getTypecheckingGS();
+                    if (combinedUpdates.canTakeFastPath || !params->updates.canTakeFastPath) {
+                        // Need to acquire the cancelation mutex before we can cancel the slow path. Assures that
+                        // coordinator thread (if present) is not processing a message in parallel, which might depend
+                        // on state we are going to eliminate via cancelation.
+                        absl::MutexLock lock(&cancelMutex);
+                        if (gs.tryCancelSlowPath(params->updates.versionEnd)) {
+                            if (combinedUpdates.canTakeFastPath) {
+                                logger->debug(
+                                    "[Preprocessor] Canceling typechecking, as edits {} thru {} can take fast path.",
+                                    combinedUpdates.versionStart, combinedUpdates.versionEnd);
+                            } else {
+                                logger->debug(
+                                    "[Preprocessor] Canceling typechecking, as new edits {} thru {} will just take "
+                                    "the slow path again.",
+                                    params->updates.versionStart, params->updates.versionEnd);
+                                combinedUpdates.updatedGS = getTypecheckingGS();
+                            }
+                            params->updates = move(combinedUpdates);
                         }
-                        params->updates = move(combinedUpdates);
                     }
                     break;
                 } else if (!msg->isDelayable()) {
@@ -185,7 +189,8 @@ bool LSPPreprocessor::ensureInitialized(LSPMethod method, const LSPMessage &msg)
     return false;
 }
 
-void LSPPreprocessor::preprocessAndEnqueue(QueueState &state, unique_ptr<LSPMessage> msg, absl::Mutex &stateMtx) {
+void LSPPreprocessor::preprocessAndEnqueue(QueueState &state, unique_ptr<LSPMessage> msg, absl::Mutex &stateMtx,
+                                           absl::Mutex &cancelMutex) {
     ENFORCE(owner == this_thread::get_id());
     if (msg->isResponse()) {
         return;
@@ -207,7 +212,7 @@ void LSPPreprocessor::preprocessAndEnqueue(QueueState &state, unique_ptr<LSPMess
             absl::MutexLock lock(&stateMtx);
             cancelRequest(state.pendingRequests, *get<unique_ptr<CancelParams>>(msg->asNotification().params));
             // A canceled request can be moved around, so we may be able to merge more file changes.
-            mergeFileChanges(stateMtx, state);
+            mergeFileChanges(stateMtx, state, cancelMutex);
             break;
         }
         case LSPMethod::PAUSE: {
@@ -316,7 +321,7 @@ void LSPPreprocessor::preprocessAndEnqueue(QueueState &state, unique_ptr<LSPMess
             state.pendingRequests.push_back(move(msg));
         }
         if (shouldMerge) {
-            mergeFileChanges(stateMtx, state);
+            mergeFileChanges(stateMtx, state, cancelMutex);
         }
     }
 }
@@ -421,7 +426,7 @@ void LSPPreprocessor::canonicalizeEdits(u4 v, unique_ptr<WatchmanQueryResponse> 
     updates.versionEnd = v;
     for (auto file : queryResponse->files) {
         // Don't append rootPath if it is empty.
-        string localPath = config->rootPath.size() > 0 ? absl::StrCat(config->rootPath, "/", file) : file;
+        string localPath = !config->rootPath.empty() ? absl::StrCat(config->rootPath, "/", file) : file;
         // Editor contents supercede file system updates.
         if (!config->isFileIgnored(localPath) && !openFiles.contains(localPath)) {
             updates.updatedFiles.push_back(make_shared<core::File>(
