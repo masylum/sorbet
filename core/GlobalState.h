@@ -210,6 +210,12 @@ public:
     // Tries to cancel a running slow path on this GlobalState or its descendent. Returns true if it succeeded, false if
     // the slow path was unable to be canceled.
     bool tryCancelSlowPath(u4 newEpoch) const;
+    // [LSP] Run only from message processing thread.
+    // Attempts to preempt a running slow path to run the provided lambda. Returns true if it succeeds.
+    bool tryPreempt(std::function<void()> &lambda);
+    // [LSP] Run from the typechecker thread during a slow path. Attempts to run the preeemption function, if one is
+    // registered.
+    void tryRunPreemptionFunction();
 
     void trace(std::string_view msg) const;
 
@@ -235,8 +241,6 @@ public:
     // During the non-critical section of typechecking, threads routinely give up and re-acquire the lock to allow
     // other requests to pre-empt long typechecking operations.
     const std::shared_ptr<absl::Mutex> typecheckMutex;
-    // Lambda to run when pre-empting typechecking.
-    std::shared_ptr<std::function<void()>> preemptFunction;
 
 private:
     bool shouldReportErrorOn(Loc loc, ErrorClass what) const;
@@ -274,6 +278,8 @@ private:
     // If lastCommittedLSPEpoch != currentlyProcessingLSPEpoch, then GlobalState is currently running a slow path
     // containing edits (lastCommittedLSPEpoch, currentlyProcessingLSPEpoch].
     const std::shared_ptr<std::atomic<u4>> lastCommittedLSPEpoch;
+    // Lambda to run when pre-empting typechecking.
+    std::shared_ptr<std::function<void()>> preemptFunction;
 
     // In LSP mode: Tracks the latest edit version ever typechecked on this GlobalState. Used to ENFORCE that we don't
     // attempt to typecheck parsed files created for a later edit.

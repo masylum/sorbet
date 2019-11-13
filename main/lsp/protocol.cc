@@ -115,10 +115,9 @@ void tagNewRequest(const std::shared_ptr<spd::logger> &logger, LSPMessage &msg) 
 }
 
 unique_ptr<Joinable> LSPPreprocessor::runPreprocessor(QueueState &incomingQ, absl::Mutex &incomingMtx,
-                                                      QueueState &processingQ, absl::Mutex &processingMtx,
-                                                      absl::Mutex &cancelMtx) {
+                                                      QueueState &processingQ, absl::Mutex &processingMtx) {
     ENFORCE(owner == this_thread::get_id());
-    return runInAThread("lspPreprocess", [this, &incomingQ, &incomingMtx, &processingQ, &processingMtx, &cancelMtx] {
+    return runInAThread("lspPreprocess", [this, &incomingQ, &incomingMtx, &processingQ, &processingMtx] {
         // Propagate the termination flag across the two queues.
         NotifyOnDestruction notifyIncoming(incomingMtx, incomingQ.terminate);
         NotifyOnDestruction notifyProcessing(processingMtx, processingQ.terminate);
@@ -146,7 +145,7 @@ unique_ptr<Joinable> LSPPreprocessor::runPreprocessor(QueueState &incomingQ, abs
                 }
             }
 
-            preprocessAndEnqueue(processingQ, move(msg), processingMtx, cancelMtx);
+            preprocessAndEnqueue(processingQ, move(msg), processingMtx);
 
             {
                 absl::MutexLock lck(&processingMtx);
@@ -263,8 +262,7 @@ optional<unique_ptr<core::GlobalState>> LSPLoop::runLSP(int inputFd) {
     });
 
     // Bridges the gap between the {reader, watchman} threads and the typechecking thread.
-    auto preprocessingThread =
-        preprocessor.runPreprocessor(incomingQueue, incomingMtx, processingQueue, processingMtx, cancelMtx);
+    auto preprocessingThread = preprocessor.runPreprocessor(incomingQueue, incomingMtx, processingQueue, processingMtx);
 
     mainThreadId = this_thread::get_id();
     {

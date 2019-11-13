@@ -1515,6 +1515,8 @@ bool GlobalState::tryCommitEpoch(u4 epoch, bool isCancelable, function<void()> t
     // Typechecking does not run under the mutex, as it would prevent another thread from running `tryCancelSlowPath`
     // during typechecking.
     typecheck();
+
+    bool committed = false;
     {
         absl::MutexLock lock(epochMutex.get());
         // Try to commit.
@@ -1524,14 +1526,46 @@ bool GlobalState::tryCommitEpoch(u4 epoch, bool isCancelable, function<void()> t
             ENFORCE(lastCommittedLSPEpoch->load() != processing, "Trying to commit an already-committed epoch.");
             // OK to commit!
             lastCommittedLSPEpoch->store(processing);
-            return true;
+            committed = true;
+        } else {
+            // Typechecking was canceled.
+            const u4 lastCommitted = lastCommittedLSPEpoch->load();
+            currentlyProcessingLSPEpoch->store(lastCommitted);
+            lspEpochInvalidator->store(lastCommitted);
         }
-        // Typechecking was canceled.
-        const u4 lastCommitted = lastCommittedLSPEpoch->load();
-        currentlyProcessingLSPEpoch->store(lastCommitted);
-        lspEpochInvalidator->store(lastCommitted);
     }
-    return false;
+
+    // Now that we are no longer running a slow path, run any preemption functions that might have snuck in while we
+    // were finishing up.
+    tryRunPreemptionFunction();
+    return committed;
+}
+
+bool GlobalState::tryPreempt(function<void()> &lambda) {
+    absl::MutexLock lock(epochMutex.get());
+    const u4 processing = currentlyProcessingLSPEpoch->load();
+    const u4 committed = lastCommittedLSPEpoch->load();
+
+    // The code should only ever set one preempt function.
+    auto fcn = atomic_load(&preemptFunction);
+    if (processing == committed || fcn != nullptr) {
+        // No slow path running, or a lambda is already scheduled.
+        // The latter should _never_ occur.
+        return false;
+    }
+
+    return atomic_compare_exchange_strong(&preemptFunction, &fcn, make_shared<function<void()>>(lambda));
+}
+
+void GlobalState::tryRunPreemptionFunction() {
+    auto preemptFunction = atomic_load(&this->preemptFunction);
+    if (preemptFunction != nullptr) {
+        // Capture with write lock before running lambda. Ensures that all worker threads park
+        // before we proceed.
+        absl::MutexLock lock(typecheckMutex.get());
+        (*preemptFunction)();
+        atomic_store(&this->preemptFunction, make_shared<function<void()>>(nullptr));
+    }
 }
 
 void GlobalState::trace(string_view msg) const {

@@ -101,6 +101,8 @@ const vector<core::FileHash> &TimeTravelingGlobalState::getGlobalStateHashes() c
     return globalStateHashes;
 }
 
+#include <iostream>
+
 vector<ast::ParsedFile> TimeTravelingGlobalState::indexFromFileSystem() {
     vector<ast::ParsedFile> indexed;
     {
@@ -118,6 +120,9 @@ vector<ast::ParsedFile> TimeTravelingGlobalState::indexFromFileSystem() {
         gs->errorQueue->drainWithQueryResponses();
     }
     globalStateHashes = computeStateHashes(0, gs->getFiles());
+
+    cout << "Indexed: " << indexed.size() << "\n";
+    cout << "Hashes: " << globalStateHashes.size() << "\n";
     return indexed;
 }
 
@@ -210,7 +215,7 @@ void TimeTravelingGlobalState::commitEdits(LSPFileUpdates &update) {
             update.hasNewFiles = true;
             // Reversal of a new file is... an empty file...
             auto emptyFile = make_shared<core::File>(string(file->path()), "", core::File::Type::Normal);
-            newUpdate.undoUpdate.hashUpdates.push_back(pipeline::computeFileHash(emptyFile, *config->logger));
+            newUpdate.undoUpdate.hashUpdates.push_back(pipeline::computeFileHash(0, emptyFile, *config->logger));
             newUpdate.undoUpdate.fileUpdates.push_back(move(emptyFile));
         }
     }

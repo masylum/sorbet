@@ -45,6 +45,9 @@ public:
  * operations that have preempted it.
  */
 class LSPTypecheckerUndoState final {
+public:
+    // The versionEnd of the update that caused this state to come into existance in the first place.
+    u4 version;
     // Stores the pre-slow-path global state.
     std::unique_ptr<core::GlobalState> gs;
     // Stores index trees containing data stored in `gs` that have been evacuated during the slow path operation.
@@ -56,19 +59,9 @@ class LSPTypecheckerUndoState final {
     // Stores the list of files that had errors before the slow path began.
     std::vector<core::FileRef> filesThatHaveErrors;
 
-public:
-    LSPTypecheckerUndoState(std::unique_ptr<core::GlobalState> oldGS,
+    LSPTypecheckerUndoState(u4 version, std::unique_ptr<core::GlobalState> oldGS,
                             UnorderedMap<int, ast::ParsedFile> oldIndexedFinalGS,
                             std::vector<core::FileRef> oldFilesThatHaveErrors);
-
-    /**
-     * Restores the state contained in this object (applies an undo). Returns a set of files to re-typecheck on the fast
-     * path in order to restore their old error lists.
-     */
-    LSPFileUpdates restore(LSPConfiguration &config, u4 version, std::unique_ptr<core::GlobalState> &gs,
-                           std::vector<ast::ParsedFile> &indexed, UnorderedMap<int, ast::ParsedFile> &indexedFinalGS,
-                           std::vector<core::FileHash> &globalStateHashes,
-                           std::vector<core::FileRef> &filesThatHaveErrors);
 
     /**
      * Records that the given items were evicted from LSPTypechecker following a typecheck run.
@@ -96,7 +89,7 @@ class LSPTypechecker final {
     std::unique_ptr<KeyValueStore> kvstore; // always null for now.
     /** Set only when typechecking is happening on the slow path. Contains all of the state needed to restore
      * LSPTypechecker to its pre-slow-path state. */
-    std::optional<LSPTypecheckerUndoState> cancelationUndoState;
+    std::optional<LSPTypecheckerUndoState> cancellationUndoState;
 
     std::shared_ptr<const LSPConfiguration> config;
 
@@ -121,6 +114,13 @@ class LSPTypechecker final {
      * TODO: Document.
      */
     void commitTypecheckRun(TypecheckRun run);
+
+    /**
+     * Undoes the given slow path changes on LSPTypechecker, and clears the client's error list for any files that were
+     * newly introduced with the canceled update. Returns a list of files that need to be retypechecked to update their
+     * error lists.
+     */
+    std::vector<core::FileRef> restore(LSPTypecheckerUndoState &undoState);
 
 public:
     LSPTypechecker(const std::shared_ptr<const LSPConfiguration> &config);
@@ -173,6 +173,12 @@ public:
      * Returns the typechecker's internal global state, which effectively destroys the typechecker for further use.
      */
     std::unique_ptr<core::GlobalState> destroy();
+
+    /**
+     * If the slow path is running, preempt it by running this lambda.
+     * Returns 'true' if the lambda will definitely preempt the slow path.
+     */
+    bool tryPreemptSlowPath(std::function<void()> &lambda);
 };
 
 } // namespace sorbet::realmain::lsp

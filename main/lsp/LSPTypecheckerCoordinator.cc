@@ -10,17 +10,21 @@ LSPTypecheckerCoordinator::LSPTypecheckerCoordinator(const shared_ptr<const LSPC
 
 void LSPTypecheckerCoordinator::asyncRunInternal(function<void()> &&lambda, bool canPreemptSlowPath) {
     if (hasDedicatedThread) {
-        lambdas.push(LSPTypecheckerLambda{move(lambda), canPreemptSlowPath}, 1);
-        if (canPreemptSlowPath) {
-            // TODO: Install preemption handler...? It'll run all preemptible things in queue.
+        // We can only preempt if this lambda will run next. We have no notion of a queue of preemption lambdas.
+        if (canPreemptSlowPath && lambdas.enqueuedEstimate() == 0) {
+            if (typechecker.tryPreemptSlowPath(lambda)) {
+                // lambda is guaranteed to preempt slow path.
+                return;
+            }
         }
+        lambdas.push(move(lambda), 1);
     } else {
         lambda();
     }
 }
 
-void LSPTypecheckerCoordinator::asyncRun(function<void(LSPTypechecker &)> &&lambda, bool canPreemptSlowPath) {
-    asyncRunInternal([&typechecker = this->typechecker, lambda]() -> void { lambda(typechecker); }, canPreemptSlowPath);
+void LSPTypecheckerCoordinator::asyncRun(function<void(LSPTypechecker &)> &&lambda) {
+    asyncRunInternal([&typechecker = this->typechecker, lambda]() -> void { lambda(typechecker); }, false);
 }
 
 void LSPTypecheckerCoordinator::syncRun(function<void(LSPTypechecker &)> &&lambda, bool canPreemptSlowPath) {
@@ -67,10 +71,10 @@ unique_ptr<Joinable> LSPTypecheckerCoordinator::startTypecheckerThread() {
         typechecker.changeThread();
 
         while (!shouldTerminate) {
-            LSPTypecheckerLambda lambda;
+            function<void()> lambda;
             auto result = lambdas.wait_pop_timed(lambda, WorkerPool::BLOCK_INTERVAL(), *config->logger);
             if (result.gotItem()) {
-                lambda.lambda();
+                lambda();
             }
         }
     });

@@ -43,7 +43,7 @@ LSPPreprocessor::LSPPreprocessor(unique_ptr<core::GlobalState> initialGS, const 
     : ttgs(TimeTravelingGlobalState(config, move(initialGS), initialVersion)), config(config),
       owner(this_thread::get_id()), nextVersion(initialVersion + 1) {}
 
-void LSPPreprocessor::mergeFileChanges(absl::Mutex &stateMtx, QueueState &state, absl::Mutex &cancelMutex) {
+void LSPPreprocessor::mergeFileChanges(absl::Mutex &stateMtx, QueueState &state) {
     stateMtx.AssertHeld();
     auto &logger = config->logger;
     // mergeFileChanges is the most expensive operation this thread performs while holding the mutex lock.
@@ -104,25 +104,21 @@ void LSPPreprocessor::mergeFileChanges(absl::Mutex &stateMtx, QueueState &state,
                     auto combinedUpdates = ttgs.getCombinedUpdates(committed + 1, params->updates.versionEnd);
                     // Cancel if combined updates end up taking the fast path, or if the new updates will just take the
                     // slow path a second time when the current slow path finishes.
-                    if (combinedUpdates.canTakeFastPath || !params->updates.canTakeFastPath) {
-                        // Need to acquire the cancelation mutex before we can cancel the slow path. Assures that
-                        // coordinator thread (if present) is not processing a message in parallel, which might depend
-                        // on state we are going to eliminate via cancelation.
-                        absl::MutexLock lock(&cancelMutex);
-                        if (gs.tryCancelSlowPath(params->updates.versionEnd)) {
-                            if (combinedUpdates.canTakeFastPath) {
-                                logger->debug(
-                                    "[Preprocessor] Canceling typechecking, as edits {} thru {} can take fast path.",
-                                    combinedUpdates.versionStart, combinedUpdates.versionEnd);
-                            } else {
-                                logger->debug(
-                                    "[Preprocessor] Canceling typechecking, as new edits {} thru {} will just take "
-                                    "the slow path again.",
-                                    params->updates.versionStart, params->updates.versionEnd);
-                                combinedUpdates.updatedGS = getTypecheckingGS();
-                            }
-                            params->updates = move(combinedUpdates);
+                    if ((combinedUpdates.canTakeFastPath || !params->updates.canTakeFastPath) &&
+                        gs.tryCancelSlowPath(params->updates.versionEnd)) {
+                        if (combinedUpdates.canTakeFastPath) {
+                            logger->debug(
+                                "[Preprocessor] Canceling typechecking, as edits {} thru {} can take fast path.",
+                                combinedUpdates.versionStart, combinedUpdates.versionEnd);
+                        } else {
+                            logger->debug(
+                                "[Preprocessor] Canceling typechecking, as new edits {} thru {} will just take "
+                                "the slow path again.",
+                                params->updates.versionStart, params->updates.versionEnd);
+                            combinedUpdates.updatedGS = getTypecheckingGS();
                         }
+                        combinedUpdates.canceledSlowPath = true;
+                        params->updates = move(combinedUpdates);
                     }
                     break;
                 } else if (!msg->isDelayable()) {
@@ -189,8 +185,7 @@ bool LSPPreprocessor::ensureInitialized(LSPMethod method, const LSPMessage &msg)
     return false;
 }
 
-void LSPPreprocessor::preprocessAndEnqueue(QueueState &state, unique_ptr<LSPMessage> msg, absl::Mutex &stateMtx,
-                                           absl::Mutex &cancelMutex) {
+void LSPPreprocessor::preprocessAndEnqueue(QueueState &state, unique_ptr<LSPMessage> msg, absl::Mutex &stateMtx) {
     ENFORCE(owner == this_thread::get_id());
     if (msg->isResponse()) {
         return;
@@ -212,7 +207,7 @@ void LSPPreprocessor::preprocessAndEnqueue(QueueState &state, unique_ptr<LSPMess
             absl::MutexLock lock(&stateMtx);
             cancelRequest(state.pendingRequests, *get<unique_ptr<CancelParams>>(msg->asNotification().params));
             // A canceled request can be moved around, so we may be able to merge more file changes.
-            mergeFileChanges(stateMtx, state, cancelMutex);
+            mergeFileChanges(stateMtx, state);
             break;
         }
         case LSPMethod::PAUSE: {
@@ -253,6 +248,7 @@ void LSPPreprocessor::preprocessAndEnqueue(QueueState &state, unique_ptr<LSPMess
                 ShowOperation op(*config, "Indexing", "Indexing files...");
                 params.updates.updatedFileIndexes = ttgs.indexFromFileSystem();
                 params.updates.updatedFileHashes = ttgs.getGlobalStateHashes();
+                ENFORCE(params.updates.updatedFileIndexes.size() == params.updates.updatedFileHashes.size());
             }
             config->markInitialized();
             params.updates.canTakeFastPath = false;
@@ -321,7 +317,7 @@ void LSPPreprocessor::preprocessAndEnqueue(QueueState &state, unique_ptr<LSPMess
             state.pendingRequests.push_back(move(msg));
         }
         if (shouldMerge) {
-            mergeFileChanges(stateMtx, state, cancelMutex);
+            mergeFileChanges(stateMtx, state);
         }
     }
 }
@@ -461,6 +457,7 @@ void LSPPreprocessor::mergeEdits(LSPFileUpdates &to, LSPFileUpdates &from) {
     to.updatedFileHashes = move(from.updatedFileHashes);
     to.hasNewFiles = to.hasNewFiles || from.hasNewFiles;
     to.canTakeFastPath = ttgs.canTakeFastPath(to.versionStart - 1, to);
+    to.canceledSlowPath = to.canceledSlowPath || from.canceledSlowPath;
     // `to` now includes the contents of `from`.
     to.versionEnd = from.versionEnd;
     // No need to update versionStart, as to comes before from.

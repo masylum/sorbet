@@ -22,6 +22,9 @@ struct LSPFileUpdates {
     u4 versionStart = 0;
     std::vector<std::shared_ptr<core::File>> updatedFiles;
     bool canTakeFastPath = false;
+    // Indicates that this update contains edits that canceled a previously-running slow path. Used to indicate that
+    // LSPTypechecker should roll back changes from that slow path.
+    bool canceledSlowPath = false;
     // Indicates that this update contains a new file. Is a hack for TimeTravelingGlobalState.
     bool hasNewFiles = false;
     std::vector<core::FileHash> updatedFileHashes;

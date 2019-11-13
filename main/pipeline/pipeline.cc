@@ -925,19 +925,6 @@ ast::ParsedFilesOrCancelled resolve(unique_ptr<core::GlobalState> &gs, vector<as
     return ast::ParsedFilesOrCancelled(move(what));
 }
 
-namespace {
-void tryPreempt(core::GlobalState &gs) {
-    auto preemptFunction = atomic_load(&gs.preemptFunction);
-    if (preemptFunction != nullptr) {
-        // Capture with write lock before running lambda. Ensures that all worker threads park
-        // before we proceed.
-        absl::MutexLock lock(gs.typecheckMutex.get());
-        (*preemptFunction)();
-        atomic_store(&gs.preemptFunction, make_shared<function<void()>>(nullptr));
-    }
-}
-} // namespace
-
 ast::ParsedFilesOrCancelled typecheck(unique_ptr<core::GlobalState> &gs, vector<ast::ParsedFile> what,
                                       const options::Options &opts, WorkerPool &workers, bool preemptible) {
     vector<ast::ParsedFile> typecheck_result;
@@ -947,7 +934,7 @@ ast::ParsedFilesOrCancelled typecheck(unique_ptr<core::GlobalState> &gs, vector<
 
         if (preemptible) {
             // Before kicking off typechecking, check if we need to preempt.
-            tryPreempt(*gs);
+            gs->tryRunPreemptionFunction();
         }
 
         shared_ptr<ConcurrentBoundedQueue<ast::ParsedFile>> fileq;
@@ -1020,7 +1007,7 @@ ast::ParsedFilesOrCancelled typecheck(unique_ptr<core::GlobalState> &gs, vector<
                     }
 
                     if (preemptible) {
-                        tryPreempt(*gs);
+                        gs->tryRunPreemptionFunction();
                     }
                 }
             }

@@ -64,7 +64,7 @@ class LSPPreprocessor final {
      * Example: (E = edit, D = delayable non-edit, M = arbitrary non-edit)
      * {[M1][E1][E2][D1][E3]} => {[M1][E1-3][D1]}
      */
-    void mergeFileChanges(absl::Mutex &stateMtx, QueueState &state, absl::Mutex &cancelMutex);
+    void mergeFileChanges(absl::Mutex &stateMtx, QueueState &state);
 
     std::unique_ptr<LSPMessage> makeAndCommitWorkspaceEdit(std::unique_ptr<SorbetWorkspaceEditParams> params,
                                                            std::unique_ptr<LSPMessage> oldMsg);
@@ -101,15 +101,12 @@ public:
      * * Indexes all files on filesystem if client sends an `initialized` message. If configured, will also send
      * progress notifications.
      *
-     * It grabs stateMutex before reading/writing `state`, and grabs the `cancelMutex` before canceling a running slow
-     * path.
+     * It grabs stateMutex before reading/writing `state`.
      */
-    void preprocessAndEnqueue(QueueState &state, std::unique_ptr<LSPMessage> msg, absl::Mutex &stateMtx,
-                              absl::Mutex &cancelMutex);
+    void preprocessAndEnqueue(QueueState &state, std::unique_ptr<LSPMessage> msg, absl::Mutex &stateMtx);
 
     std::unique_ptr<Joinable> runPreprocessor(QueueState &incomingQueue, absl::Mutex &incomingMtx,
-                                              QueueState &processingQueue, absl::Mutex &processingMtx,
-                                              absl::Mutex &cancelMutex);
+                                              QueueState &processingQueue, absl::Mutex &processingMtx);
 };
 
 } // namespace sorbet::realmain::lsp
