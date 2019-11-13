@@ -314,6 +314,11 @@ bool LSPTypechecker::runSlowPath(LSPFileUpdates updates, bool cancelableAndPreem
         prodCategoryCounterInc("lsp.updates", "slowpath");
         // No need to keep around cancelation state!
         cancellationUndoState = nullopt;
+        if (config->getClientConfig().enableTypecheckInfo) {
+            auto sorbetTypecheckInfo = make_unique<SorbetTypecheckRunInfo>(false, vector<string>());
+            config->output->write(make_unique<LSPMessage>(
+                make_unique<NotificationMessage>("2.0", LSPMethod::SorbetTypecheckRunInfo, move(sorbetTypecheckInfo))));
+        }
         pushDiagnostics(updates.versionEnd, move(affectedFiles), move(out.first));
         return true;
     } else {
