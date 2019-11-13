@@ -101,8 +101,6 @@ const vector<core::FileHash> &TimeTravelingGlobalState::getGlobalStateHashes() c
     return globalStateHashes;
 }
 
-#include <iostream>
-
 vector<ast::ParsedFile> TimeTravelingGlobalState::indexFromFileSystem() {
     vector<ast::ParsedFile> indexed;
     {
@@ -119,10 +117,15 @@ vector<ast::ParsedFile> TimeTravelingGlobalState::indexFromFileSystem() {
         // (Note: Flushing is disabled in LSP mode, so we have to drain.)
         gs->errorQueue->drainWithQueryResponses();
     }
+
     globalStateHashes = computeStateHashes(0, gs->getFiles());
 
-    cout << "Indexed: " << indexed.size() << "\n";
-    cout << "Hashes: " << globalStateHashes.size() << "\n";
+    // When inputFileNames is 0 (as in tests), indexed ends up being size 0 because we don't index payload files.
+    // Resize the indexed array accordingly.
+    if (indexed.size() < globalStateHashes.size()) {
+        indexed.resize(globalStateHashes.size());
+    }
+
     return indexed;
 }
 

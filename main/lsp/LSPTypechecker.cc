@@ -341,7 +341,10 @@ void LSPTypechecker::pushDiagnostics(u4 version, vector<core::FileRef> filesType
     for (auto &accumulated : errorsAccumulated) {
         // Ignore errors from files that have been typechecked on newer versions (e.g. because they preempted the slow
         // path)
-        if (globalStateHashes[accumulated.first.id()].version == version) {
+        // TODO(jvilk): Rollover could theoretically happen. I calculated that it would take an absurdly long time for
+        // someone to make 4294967295 edits in one session. One way to handle that case: Have a special overflow
+        // request that blocks preemption and resets all versions to 0.
+        if (globalStateHashes[accumulated.first.id()].version <= version) {
             errorFilesInNewRun.push_back(accumulated.first);
         }
     }
@@ -353,7 +356,7 @@ void LSPTypechecker::pushDiagnostics(u4 version, vector<core::FileRef> filesType
 
     for (auto f : this->filesThatHaveErrors) {
         if (filesTypecheckedAsSet.find(f) != filesTypecheckedAsSet.end() &&
-            globalStateHashes[f.id()].version == version) {
+            globalStateHashes[f.id()].version <= version) {
             // We've retypechecked this file, it hasn't been typechecked with newer edits, and it doesn't have errors.
             // thus, we will update the error list for this file on client to be the empty list.
             filesToUpdateErrorListFor.push_back(f);
