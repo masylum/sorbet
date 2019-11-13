@@ -618,7 +618,11 @@ TypecheckRun TypecheckRun::makeCanceled() {
 }
 
 bool LSPTypechecker::tryPreemptSlowPath(function<void()> &lambda) {
-    return gs->tryPreempt(lambda);
+    // Note: GS may be null if initialization has not yet completed.
+    if (gs) {
+        return gs->tryPreempt(lambda);
+    }
+    return false;
 }
 
 } // namespace sorbet::realmain::lsp
