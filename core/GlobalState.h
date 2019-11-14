@@ -240,6 +240,7 @@ public:
     // - writer lock during queries / fast path typechecking
     // During the non-critical section of typechecking, threads routinely give up and re-acquire the lock to allow
     // other requests to pre-empt long typechecking operations.
+    // TODO: Does this need to be a shared_ptr?
     const std::shared_ptr<absl::Mutex> typecheckMutex;
 
 private:

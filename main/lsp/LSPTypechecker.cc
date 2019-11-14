@@ -241,13 +241,6 @@ bool LSPTypechecker::runSlowPath(LSPFileUpdates updates, bool cancelableAndPreem
     finalGS->errorQueue = make_shared<core::ErrorQueue>(finalGS->errorQueue->logger, finalGS->errorQueue->tracer);
     finalGS->errorQueue->ignoreFlushes = true;
 
-    if (cancelableAndPreemptible) {
-        // Back up old state in case this slow path gets canceled.
-        // `gs` and `indexedFinalGS` are OK to move since they get unconditionally overwritten by slow path.
-        cancellationUndoState = make_optional<LSPTypecheckerUndoState>(updates.versionEnd, move(gs),
-                                                                       std::move(indexedFinalGS), filesThatHaveErrors);
-    }
-
     // Note: Commits can only be canceled if this edit is cancelable, LSP is running across multiple threads, and the
     // cancelation feature is enabled.
     const bool committed = finalGS->tryCommitEpoch(updates.versionEnd, cancelableAndPreemptible, [&]() -> void {
@@ -268,6 +261,12 @@ bool LSPTypechecker::runSlowPath(LSPFileUpdates updates, bool cancelableAndPreem
         // Before making preemption or cancelation possible, pre-commit the changes from this slow path so that
         // preempted queries can use them and the code after this lambda can assume that this step happened.
         updates.updatedGS = move(finalGS);
+        if (cancelableAndPreemptible) {
+            // Back up old state in case this slow path gets canceled.
+            // `gs` and `indexedFinalGS` are OK to move since they get unconditionally overwritten by slow path.
+            cancellationUndoState = make_optional<LSPTypecheckerUndoState>(
+                updates.versionEnd, move(gs), std::move(indexedFinalGS), filesThatHaveErrors);
+        }
         commitFileUpdates(updates, false);
 
         // Copy the indexes of unchanged files.

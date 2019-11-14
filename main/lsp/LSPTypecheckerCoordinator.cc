@@ -14,9 +14,20 @@ void LSPTypecheckerCoordinator::asyncRunInternal(function<void()> &&lambda, bool
         if (canPreemptSlowPath && lambdas.enqueuedEstimate() == 0) {
             if (typechecker.tryPreemptSlowPath(lambda)) {
                 // lambda is guaranteed to preempt slow path.
+                config->logger->debug("Preempting slow path.");
                 return;
+            } else {
+                config->logger->debug("Preemption attempt failed: tryPreemptSlowPath returned false.");
             }
         }
+
+        // Debug
+        if (canPreemptSlowPath && lambdas.enqueuedEstimate() > 0) {
+            config->logger->debug("Preemption attempt failed: Blocking request exists in queue.");
+        } else {
+            config->logger->debug("Request cannot preempt.");
+        }
+
         lambdas.push(move(lambda), 1);
     } else {
         lambda();
