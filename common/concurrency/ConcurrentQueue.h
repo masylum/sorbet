@@ -60,7 +60,7 @@ public:
         if (!sorbet::emscripten_build) {
             ret.shouldRetry = elementsLeftToPush.load(std::memory_order_acquire) != 0;
             if (ret.shouldRetry) {
-                sorbet::Timer time(log, "wait_pop_timed");
+                // sorbet::Timer time(log, "wait_pop_timed");
                 ret.returned = _queue.wait_dequeue_timed(elem, timeout);
             } else { // all elements has been pushed, no need to wait.
                 ret.returned = _queue.try_dequeue(elem);

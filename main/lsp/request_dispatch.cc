@@ -63,7 +63,7 @@ void LSPLoop::processRequestInternal(LSPMessage &msg) {
                             prodCategoryCounterAdd("lsp.messages.processed", "sorbet/mergedEdits", merged);
                         }
                     },
-                    false);
+                    true);
             } else {
                 // Slow path. Run async.
                 typecheckerCoord.asyncRun([editParams = move(editParams), merged](LSPTypechecker &typechecker) -> void {

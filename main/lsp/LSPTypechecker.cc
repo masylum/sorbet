@@ -243,9 +243,9 @@ bool LSPTypechecker::runSlowPath(LSPFileUpdates updates, bool cancelableAndPreem
 
     if (cancelableAndPreemptible) {
         // Back up old state in case this slow path gets canceled.
-        // OK to move since they get unconditionally overwritten by slow path.
-        cancellationUndoState = make_optional<LSPTypecheckerUndoState>(
-            updates.versionEnd, move(gs), std::move(indexedFinalGS), move(filesThatHaveErrors));
+        // `gs` and `indexedFinalGS` are OK to move since they get unconditionally overwritten by slow path.
+        cancellationUndoState = make_optional<LSPTypecheckerUndoState>(updates.versionEnd, move(gs),
+                                                                       std::move(indexedFinalGS), filesThatHaveErrors);
     }
 
     // Note: Commits can only be canceled if this edit is cancelable, LSP is running across multiple threads, and the
@@ -296,11 +296,11 @@ bool LSPTypechecker::runSlowPath(LSPFileUpdates updates, bool cancelableAndPreem
             ENFORCE(tree.file.exists());
             affectedFiles.push_back(tree.file);
         }
+
+        pipeline::typecheck(gs, move(resolved), config->opts, config->workers, cancelableAndPreemptible);
         if (gs->sleepInSlowPath) {
             Timer::timedSleep(3000ms, *logger, "slow_path.typecheck.sleep");
         }
-
-        pipeline::typecheck(gs, move(resolved), config->opts, config->workers, cancelableAndPreemptible);
     });
     ENFORCE(gs);
 
@@ -346,7 +346,7 @@ void LSPTypechecker::pushDiagnostics(u4 version, vector<core::FileRef> filesType
     for (auto &accumulated : errorsAccumulated) {
         // Ignore errors from files that have been typechecked on newer versions (e.g. because they preempted the slow
         // path)
-        // TODO(jvilk): Rollover could theoretically happen. I calculated that it would take an absurdly long time for
+        // TODO(jvilk): Overflow could theoretically happen. I calculated that it would take an absurdly long time for
         // someone to make 4294967295 edits in one session. One way to handle that case: Have a special overflow
         // request that blocks preemption and resets all versions to 0.
         if (globalStateHashes[accumulated.first.id()].version <= version) {
@@ -360,6 +360,7 @@ void LSPTypechecker::pushDiagnostics(u4 version, vector<core::FileRef> filesType
     filesTypecheckedAsSet.insert(filesTypechecked.begin(), filesTypechecked.end());
 
     for (auto f : this->filesThatHaveErrors) {
+        // TODO(jvilk): Overflow warning applies here, too.
         if (filesTypecheckedAsSet.find(f) != filesTypecheckedAsSet.end() &&
             globalStateHashes[f.id()].version <= version) {
             // We've retypechecked this file, it hasn't been typechecked with newer edits, and it doesn't have errors.
