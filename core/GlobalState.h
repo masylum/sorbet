@@ -45,12 +45,14 @@ class GlobalState final {
     friend struct NameRefDebugCheck;
 
 public:
-    GlobalState(std::shared_ptr<ErrorQueue> errorQueue,
-                std::shared_ptr<absl::Mutex> epochMutex = std::make_shared<absl::Mutex>(),
-                std::shared_ptr<std::atomic<u4>> currentlyProcessingLSPEpoch = std::make_shared<std::atomic<u4>>(0),
-                std::shared_ptr<std::atomic<u4>> lspEpochInvalidator = std::make_shared<std::atomic<u4>>(0),
-                std::shared_ptr<std::atomic<u4>> lastCommittedLSPEpoch = std::make_shared<std::atomic<u4>>(0),
-                std::shared_ptr<absl::Mutex> typecheckMutex = std::make_shared<absl::Mutex>());
+    GlobalState(
+        std::shared_ptr<ErrorQueue> errorQueue,
+        std::shared_ptr<absl::Mutex> epochMutex = std::make_shared<absl::Mutex>(),
+        std::shared_ptr<std::atomic<u4>> currentlyProcessingLSPEpoch = std::make_shared<std::atomic<u4>>(0),
+        std::shared_ptr<std::atomic<u4>> lspEpochInvalidator = std::make_shared<std::atomic<u4>>(0),
+        std::shared_ptr<std::atomic<u4>> lastCommittedLSPEpoch = std::make_shared<std::atomic<u4>>(0),
+        std::shared_ptr<std::shared_ptr<std::function<void()>>> preemptFunction =
+            std::make_shared<std::shared_ptr<std::function<void()>>>(std::make_shared<std::function<void()>>()));
 
     void initEmpty();
     void installIntrinsics();
@@ -194,7 +196,7 @@ public:
 
     // Indicates the number of times LSP has run the type checker with this global state.
     // Used to ensure GlobalState is in the correct state to process requests.
-    unsigned int lspTypecheckCount = 0;
+    std::atomic<u4> lspTypecheckCount = 0;
     // [LSP] Run only from the typechecking thread.
     // Tries to commit the given epoch. Returns true if the commit succeeeded, or false if it was canceled.
     bool tryCommitEpoch(u4 epoch, bool isCancelable, std::function<void()> typecheck);
@@ -240,8 +242,7 @@ public:
     // - writer lock during queries / fast path typechecking
     // During the non-critical section of typechecking, threads routinely give up and re-acquire the lock to allow
     // other requests to pre-empt long typechecking operations.
-    // TODO: Does this need to be a shared_ptr?
-    const std::shared_ptr<absl::Mutex> typecheckMutex;
+    const std::unique_ptr<absl::Mutex> typecheckMutex;
 
 private:
     bool shouldReportErrorOn(Loc loc, ErrorClass what) const;
@@ -279,8 +280,9 @@ private:
     // If lastCommittedLSPEpoch != currentlyProcessingLSPEpoch, then GlobalState is currently running a slow path
     // containing edits (lastCommittedLSPEpoch, currentlyProcessingLSPEpoch].
     const std::shared_ptr<std::atomic<u4>> lastCommittedLSPEpoch;
-    // Lambda to run when pre-empting typechecking.
-    std::shared_ptr<std::function<void()>> preemptFunction;
+    // Lambda to run when pre-empting typechecking. Outer shared_ptr is shared amongst all GlobalState instances that
+    // share a common lineage, whereas contents of inner shared_ptr is atomically replaced during preemption.
+    const std::shared_ptr<std::shared_ptr<std::function<void()>>> preemptFunction;
 
     // In LSP mode: Tracks the latest edit version ever typechecked on this GlobalState. Used to ENFORCE that we don't
     // attempt to typecheck parsed files created for a later edit.

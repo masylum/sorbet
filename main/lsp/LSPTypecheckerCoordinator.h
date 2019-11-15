@@ -32,8 +32,9 @@ public:
     /**
      * Runs lambda with exclusive access to GlobalState. lambda runs on typechecker thread. These cannot preeempt the
      * slow path because we do not support having a queue of preempting lambdas.
+     * If `waitUntilTaskStarts` is `true`, then this method will block until lambda starts running.
      */
-    void asyncRun(std::function<void(LSPTypechecker &)> &&lambda);
+    void asyncRun(std::function<void(LSPTypechecker &)> &&lambda, bool waitUntilTaskStarts);
 
     /**
      * Like asyncRun, but blocks until `lambda` completes. These can preeempt a currently running slow path.

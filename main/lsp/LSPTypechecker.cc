@@ -126,7 +126,7 @@ TypecheckRun LSPTypechecker::runFastPath(LSPFileUpdates updates) const {
     ENFORCE(this_thread::get_id() == typecheckerThreadId,
             "runTypechecking can only be called from the typechecker thread.");
     // We assume gs is a copy of initialGS, which has had the inferencer & resolver run.
-    ENFORCE(gs->lspTypecheckCount > 0,
+    ENFORCE(gs->lspTypecheckCount.load() > 0,
             "Tried to run fast path with a GlobalState object that never had inferencer and resolver runs.");
 
     if (!updates.canTakeFastPath) {
@@ -198,9 +198,11 @@ TypecheckRun LSPTypechecker::runFastPath(LSPFileUpdates updates) const {
 
     ENFORCE(gs->lspQuery.isEmpty());
     auto resolved = pipeline::incrementalResolve(*gs, move(updatedIndexed), config->opts);
-    pipeline::typecheck(gs, move(resolved), config->opts, config->workers);
+    // Disable multithreading for fast path since it can preempt a slow path that is already monopolizing all workers.
+    auto workers = WorkerPool::create(0, gs->tracer());
+    pipeline::typecheck(gs, move(resolved), config->opts, *workers);
     auto out = gs->errorQueue->drainWithQueryResponses();
-    gs->lspTypecheckCount++;
+    gs->lspTypecheckCount.fetch_add(1);
     return TypecheckRun(move(out.first), move(subset), move(updates), true);
 }
 
@@ -261,13 +263,7 @@ bool LSPTypechecker::runSlowPath(LSPFileUpdates updates, bool cancelableAndPreem
         // Before making preemption or cancelation possible, pre-commit the changes from this slow path so that
         // preempted queries can use them and the code after this lambda can assume that this step happened.
         updates.updatedGS = move(finalGS);
-        if (cancelableAndPreemptible) {
-            // Back up old state in case this slow path gets canceled.
-            // `gs` and `indexedFinalGS` are OK to move since they get unconditionally overwritten by slow path.
-            cancellationUndoState = make_optional<LSPTypecheckerUndoState>(
-                updates.versionEnd, move(gs), std::move(indexedFinalGS), filesThatHaveErrors);
-        }
-        commitFileUpdates(updates, false);
+        commitFileUpdates(updates, false, cancelableAndPreemptible);
 
         // Copy the indexes of unchanged files.
         for (const auto &tree : indexed) {
@@ -296,6 +292,8 @@ bool LSPTypechecker::runSlowPath(LSPFileUpdates updates, bool cancelableAndPreem
             affectedFiles.push_back(tree.file);
         }
 
+        // Inform the fast path that this global state is OK for typechecking as resolution has completed.
+        gs->lspTypecheckCount.fetch_add(1);
         pipeline::typecheck(gs, move(resolved), config->opts, config->workers, cancelableAndPreemptible);
         if (gs->sleepInSlowPath) {
             Timer::timedSleep(3000ms, *logger, "slow_path.typecheck.sleep");
@@ -306,7 +304,6 @@ bool LSPTypechecker::runSlowPath(LSPFileUpdates updates, bool cancelableAndPreem
     // Note: This is important to do even if the slow path was canceled. It clears out any typechecking errors from the
     // aborted typechecking run.
     auto out = gs->errorQueue->drainWithQueryResponses();
-    gs->lspTypecheckCount++;
     gs->lspQuery = core::lsp::Query::noQuery();
 
     if (committed) {
@@ -445,9 +442,17 @@ void LSPTypechecker::pushDiagnostics(u4 version, vector<core::FileRef> filesType
     }
 }
 
-void LSPTypechecker::commitFileUpdates(LSPFileUpdates &updates, bool tookFastPath) {
+void LSPTypechecker::commitFileUpdates(LSPFileUpdates &updates, bool tookFastPath, bool couldBeCanceled) {
     // Only take the fast path if the updates _can_ take the fast path.
     ENFORCE((tookFastPath && updates.canTakeFastPath) || !tookFastPath);
+
+    unique_ptr<absl::MutexLock> gsLock;
+
+    if (couldBeCanceled) {
+        gsLock = make_unique<absl::MutexLock>(&gsMutex);
+        cancellationUndoState = make_optional<LSPTypecheckerUndoState>(updates.versionEnd, move(gs),
+                                                                       std::move(indexedFinalGS), filesThatHaveErrors);
+    }
 
     // Clear out state associated with old finalGS.
     if (!tookFastPath) {
@@ -478,6 +483,9 @@ void LSPTypechecker::commitFileUpdates(LSPFileUpdates &updates, bool tookFastPat
     }
 
     if (updates.updatedGS.has_value()) {
+        if (!gsLock) {
+            gsLock = make_unique<absl::MutexLock>(&gsMutex);
+        }
         gs = move(updates.updatedGS.value());
     } else {
         ENFORCE(tookFastPath);
@@ -493,7 +501,7 @@ void LSPTypechecker::commitTypecheckRun(TypecheckRun run) {
     }
 
     Timer timeit(logger, "commitTypecheckRun");
-    commitFileUpdates(run.updates, run.tookFastPath);
+    commitFileUpdates(run.updates, run.tookFastPath, false);
     if (config->getClientConfig().enableTypecheckInfo) {
         vector<string> pathsTypechecked;
         for (auto &f : run.filesTypechecked) {
@@ -536,7 +544,7 @@ void tryApplyDefLocSaver(const core::GlobalState &gs, vector<ast::ParsedFile> &i
 
 LSPQueryResult LSPTypechecker::query(const core::lsp::Query &q, const std::vector<core::FileRef> &filesForQuery) const {
     // We assume gs is a copy of initialGS, which has had the inferencer & resolver run.
-    ENFORCE(gs->lspTypecheckCount > 0,
+    ENFORCE(gs->lspTypecheckCount.load() > 0,
             "Tried to run a query with a GlobalState object that never had inferencer and resolver runs.");
 
     Timer timeit(config->logger, "query");
@@ -557,9 +565,11 @@ LSPQueryResult LSPTypechecker::query(const core::lsp::Query &q, const std::vecto
     auto resolved = pipeline::incrementalResolve(*gs, move(updatedIndexed), config->opts);
     tryApplyDefLocSaver(*gs, resolved);
     tryApplyLocalVarSaver(*gs, resolved);
-    pipeline::typecheck(gs, move(resolved), config->opts, config->workers);
+    // Disable multithreading for fast path since it can preempt a slow path that is already monopolizing all workers.
+    auto workers = WorkerPool::create(0, gs->tracer());
+    pipeline::typecheck(gs, move(resolved), config->opts, *workers);
     auto out = gs->errorQueue->drainWithQueryResponses();
-    gs->lspTypecheckCount++;
+    gs->lspTypecheckCount.fetch_add(1);
     gs->lspQuery = core::lsp::Query::noQuery();
     return LSPQueryResult{move(out.second)};
 }
@@ -618,6 +628,7 @@ TypecheckRun TypecheckRun::makeCanceled() {
 }
 
 bool LSPTypechecker::tryPreemptSlowPath(function<void()> &lambda) {
+    absl::MutexLock gsLock(&gsMutex);
     // Note: GS may be null if initialization has not yet completed.
     if (gs) {
         return gs->tryPreempt(lambda);

@@ -75,6 +75,9 @@ public:
 class LSPTypechecker final {
     /** Contains the ID of the thread responsible for typechecking. */
     std::thread::id typecheckerThreadId;
+    /** A mutex that protects global state on non-typechecker threads. Grabbed on typechecker thread _only_ when gs is
+     * going to be updated, and on secondary threads for RO operations. */
+    absl::Mutex gsMutex;
     /** GlobalState used for typechecking. Mutable because typechecking routines, even when not changing the GlobalState
      * instance, actively consume and replace GlobalState. */
     mutable std::unique_ptr<core::GlobalState> gs;
@@ -90,6 +93,7 @@ class LSPTypechecker final {
     /** Set only when typechecking is happening on the slow path. Contains all of the state needed to restore
      * LSPTypechecker to its pre-slow-path state. */
     std::optional<LSPTypecheckerUndoState> cancellationUndoState;
+    std::shared_ptr<std::shared_ptr<std::function<void()>>> preemptFunction;
 
     std::shared_ptr<const LSPConfiguration> config;
 
@@ -108,7 +112,7 @@ class LSPTypechecker final {
     void pushDiagnostics(u4 version, std::vector<core::FileRef> filesTypechecked,
                          std::vector<std::unique_ptr<core::Error>> errors);
 
-    void commitFileUpdates(LSPFileUpdates &updates, bool tookFastPath);
+    void commitFileUpdates(LSPFileUpdates &updates, bool tookFastPath, bool couldBeCanceled);
 
     /**
      * TODO: Document.

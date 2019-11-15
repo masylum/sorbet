@@ -66,13 +66,15 @@ void LSPLoop::processRequestInternal(LSPMessage &msg) {
                     true);
             } else {
                 // Slow path. Run async.
-                typecheckerCoord.asyncRun([editParams = move(editParams), merged](LSPTypechecker &typechecker) -> void {
-                    // Only report stats if the edit was committed.
-                    if (!typechecker.typecheck(move(editParams->updates), true)) {
-                        prodCategoryCounterInc("lsp.messages.processed", "sorbet/workspaceEdit");
-                        prodCategoryCounterAdd("lsp.messages.processed", "sorbet/mergedEdits", merged);
-                    }
-                });
+                typecheckerCoord.asyncRun(
+                    [editParams = move(editParams), merged](LSPTypechecker &typechecker) -> void {
+                        // Only report stats if the edit was committed.
+                        if (!typechecker.typecheck(move(editParams->updates), true)) {
+                            prodCategoryCounterInc("lsp.messages.processed", "sorbet/workspaceEdit");
+                            prodCategoryCounterAdd("lsp.messages.processed", "sorbet/mergedEdits", merged);
+                        }
+                    },
+                    true);
             }
         } else if (method == LSPMethod::Initialized) {
             prodCategoryCounterInc("lsp.messages.processed", "initialized");
