@@ -114,13 +114,13 @@ void tagNewRequest(const std::shared_ptr<spd::logger> &logger, LSPMessage &msg) 
     msg.timer = make_unique<Timer>(logger, "processing_time");
 }
 
-unique_ptr<Joinable> LSPPreprocessor::runPreprocessor(QueueState &incomingQ, absl::Mutex &incomingMtx,
-                                                      QueueState &processingQ, absl::Mutex &processingMtx) {
+unique_ptr<Joinable> LSPPreprocessor::runPreprocessor(QueueState &incomingQueue, absl::Mutex &incomingMtx,
+                                                      QueueState &processingQueue, absl::Mutex &processingMtx) {
     ENFORCE(owner == this_thread::get_id());
-    return runInAThread("lspPreprocess", [this, &incomingQ, &incomingMtx, &processingQ, &processingMtx] {
+    return runInAThread("lspPreprocess", [this, &incomingQueue, &incomingMtx, &processingQueue, &processingMtx] {
         // Propagate the termination flag across the two queues.
-        NotifyOnDestruction notifyIncoming(incomingMtx, incomingQ.terminate);
-        NotifyOnDestruction notifyProcessing(processingMtx, processingQ.terminate);
+        NotifyOnDestruction notifyIncoming(incomingMtx, incomingQueue.terminate);
+        NotifyOnDestruction notifyProcessing(processingMtx, processingQueue.terminate);
         ttgs.switchToNewThread();
         owner = this_thread::get_id();
         while (true) {
@@ -131,27 +131,27 @@ unique_ptr<Joinable> LSPPreprocessor::runPreprocessor(QueueState &incomingQ, abs
                     +[](QueueState *incomingQueue) -> bool {
                         return incomingQueue->terminate || !incomingQueue->pendingRequests.empty();
                     },
-                    &incomingQ));
+                    &incomingQueue));
                 // Only terminate once incoming queue is drained.
-                if (incomingQ.terminate && incomingQ.pendingRequests.empty()) {
+                if (incomingQueue.terminate && incomingQueue.pendingRequests.empty()) {
                     config->logger->debug("Preprocessor terminating");
                     return;
                 }
-                msg = move(incomingQ.pendingRequests.front());
-                incomingQ.pendingRequests.pop_front();
+                msg = move(incomingQueue.pendingRequests.front());
+                incomingQueue.pendingRequests.pop_front();
                 // Combine counters with this thread's counters.
-                if (!incomingQ.counters.hasNullCounters()) {
-                    counterConsume(move(incomingQ.counters));
+                if (!incomingQueue.counters.hasNullCounters()) {
+                    counterConsume(move(incomingQueue.counters));
                 }
             }
 
-            preprocessAndEnqueue(processingQ, move(msg), processingMtx);
+            preprocessAndEnqueue(processingQueue, move(msg), processingMtx);
 
             {
                 absl::MutexLock lck(&processingMtx);
                 // Merge the counters from all of the worker threads with those stored in
                 // processingQueue.
-                processingQ.counters = mergeCounters(move(processingQ.counters));
+                processingQueue.counters = mergeCounters(move(processingQueue.counters));
             }
         }
     });
@@ -184,10 +184,6 @@ optional<unique_ptr<core::GlobalState>> LSPLoop::runLSP(int inputFd) {
     // Processing queue contains preprocessed messages that are ready to be processed (e.g., edits are merged).
     absl::Mutex processingMtx;
     QueueState processingQueue;
-
-    // Mutex that must be held in order to cancel the slow path. The coordinator thread holds it while processing
-    // messages to avoid races with the typechecking thread.
-    absl::Mutex cancelMtx;
 
     auto typecheckThread = typecheckerCoord.startTypecheckerThread();
 
