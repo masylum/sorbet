@@ -184,6 +184,7 @@ void LSPLoop::processRequestInternal(LSPMessage &msg) {
         } else if (method == LSPMethod::TextDocumentReferences) {
             auto &params = get<unique_ptr<ReferenceParams>>(rawParams);
             // Do *not* preempt the slow path for reference requests. They really need to use all cores for performance.
+            // TODO: Fix so this uses WorkerPool. Currently, it does not because I've disabled them for fast path.
             typecheckerCoord.syncRun(
                 [&](auto &tc) -> void { config->output->write(handleTextDocumentReferences(tc, id, *params)); }, false);
         } else if (method == LSPMethod::SorbetReadFile) {

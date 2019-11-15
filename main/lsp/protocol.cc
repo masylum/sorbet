@@ -274,8 +274,6 @@ optional<unique_ptr<core::GlobalState>> LSPLoop::runLSP(int inputFd) {
         while (true) {
             unique_ptr<LSPMessage> msg;
             bool hasMoreMessages;
-            // Holds the cancelation lock while processing a message.
-            unique_ptr<absl::MutexLock> cancelLock;
             {
                 absl::MutexLock lck(&processingMtx);
                 Timer timeit(logger, "idle");
@@ -301,7 +299,6 @@ optional<unique_ptr<core::GlobalState>> LSPLoop::runLSP(int inputFd) {
                 hasMoreMessages = !processingQueue.pendingRequests.empty();
                 exitProcessed = msg->isNotification() && msg->method() == LSPMethod::Exit;
                 maybeStartCommitSlowPathEdit(*msg);
-                cancelLock = make_unique<absl::MutexLock>(&cancelMtx);
             }
             prodCounterInc("lsp.messages.received");
             processRequestInternal(*msg);

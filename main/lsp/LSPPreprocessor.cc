@@ -16,7 +16,6 @@ bool sanityCheckUpdate(const core::GlobalState &gs, const LSPFileUpdates &update
     ENFORCE(updates.updatedFiles.size() == updates.updatedFileIndexes.size());
     for (int i = 0; i < updates.updatedFiles.size(); i++) {
         const auto &f = updates.updatedFiles[i];
-        // const auto &h = updates.updatedFileHashes[i];
         const auto &ast = updates.updatedFileIndexes[i];
         ENFORCE(f->path() == ast.file.data(gs).path());
         ENFORCE(!encounteredFiles.contains(f->path()));

@@ -213,7 +213,8 @@ public:
     // the slow path was unable to be canceled.
     bool tryCancelSlowPath(u4 newEpoch) const;
     // [LSP] Run only from message processing thread.
-    // Attempts to preempt a running slow path to run the provided lambda. Returns true if it succeeds.
+    // Attempts to preempt a running slow path to run the provided lambda. If it returns true, the lambda is guaranteed
+    // to run.
     bool tryPreempt(std::function<void()> &lambda);
     // [LSP] Run from the typechecker thread during a slow path. Attempts to run the preeemption function, if one is
     // registered.
@@ -236,12 +237,11 @@ public:
     bool hasAnyDslPlugin() const;
 
     std::vector<std::unique_ptr<pipeline::semantic_extension::SemanticExtension>> semanticExtensions;
-    // In LSP mode: Used to pre-empt typechecking. Grabbed as a:
-    // - writer lock during the critical section of typechecking (e.g., indexer/resolver steps).
-    // - reader lock during non-critical section of typechecking (i.e., post-resolver steps).
-    // - writer lock during queries / fast path typechecking
-    // During the non-critical section of typechecking, threads routinely give up and re-acquire the lock to allow
-    // other requests to pre-empt long typechecking operations.
+    // In LSP mode: Used to pre-empt typechecking (post-resolver).
+    // - Worker threads grab as a reader lock, and routinely gives up and re-acquire the lock to allow other requests to
+    // pre-empt.
+    // - Typechecking coordinator thread grabs as a writer lock when there's a preemption function, which halts all
+    // worker threads.
     const std::unique_ptr<absl::Mutex> typecheckMutex;
 
 private:
@@ -283,10 +283,6 @@ private:
     // Lambda to run when pre-empting typechecking. Outer shared_ptr is shared amongst all GlobalState instances that
     // share a common lineage, whereas contents of inner shared_ptr is atomically replaced during preemption.
     const std::shared_ptr<std::shared_ptr<std::function<void()>>> preemptFunction;
-
-    // In LSP mode: Tracks the latest edit version ever typechecked on this GlobalState. Used to ENFORCE that we don't
-    // attempt to typecheck parsed files created for a later edit.
-    u4 latestTypecheckedEditVersion;
 
     bool freezeSymbolTable();
     bool freezeNameTable();

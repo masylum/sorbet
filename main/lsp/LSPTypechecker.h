@@ -114,9 +114,6 @@ class LSPTypechecker final {
 
     void commitFileUpdates(LSPFileUpdates &updates, bool tookFastPath, bool couldBeCanceled);
 
-    /**
-     * TODO: Document.
-     */
     void commitTypecheckRun(TypecheckRun run);
 
     /**
