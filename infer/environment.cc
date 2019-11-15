@@ -971,7 +971,7 @@ core::TypePtr Environment::processBinding(core::Context ctx, cfg::Binding &bind,
                                 core::Types::approximateSubtract(ctx, typeAndOrigin.type, core::Types::nilClass());
                             if (core::Types::isSubTypeUnderConstraint(ctx, constr, withoutNil, methodReturnType,
                                                                       core::UntypedMode::AlwaysCompatible)) {
-                                e.replaceWith("Wrap in `T.must`", bind.loc, "Opus::SorbetMigrations::AttachedClassMigration.must({})", bind.loc.source(ctx));
+                                e.replaceWith("Wrap in `T.must`", bind.loc, "Opus::SorbetMigrations::LoadOneMigration.must({})", bind.loc.source(ctx));
                             }
                         }
                     }
