@@ -73,7 +73,7 @@ module T::Generic
   sig {params(params: T.untyped).returns(T::Private::Methods::DeclBuilder)}
   def type_parameters(*params); end
 
-  def experimental_attached_class_new(*args); end
+  def experimental_attached_class_new(*args, &blk); end
 
   def type_member(variance=:invariant, fixed: nil, lower: T.untyped, upper: BasicObject); end
   def type_template(variance=:invariant, fixed: nil, lower: T.untyped, upper: BasicObject); end
