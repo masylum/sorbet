@@ -17,7 +17,6 @@
 #include "rewriter/ProtobufDescriptorPool.h"
 #include "rewriter/Rails.h"
 #include "rewriter/Regexp.h"
-#include "rewriter/SelfNew.h"
 #include "rewriter/Struct.h"
 #include "rewriter/TEnum.h"
 #include "rewriter/TypeMembers.h"
@@ -154,15 +153,7 @@ public:
     }
 
     unique_ptr<ast::Expression> postTransformSend(core::MutableContext ctx, unique_ptr<ast::Send> send) {
-        if (auto expr = InterfaceWrapper::run(ctx, send.get())) {
-            return expr;
-        }
-
-        if (auto expr = SelfNew::run(ctx, send.get())) {
-            return expr;
-        }
-
-        return send;
+        return InterfaceWrapper::run(ctx, std::move(send));
     }
 
 private:
