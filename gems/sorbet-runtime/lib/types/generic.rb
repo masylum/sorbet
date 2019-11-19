@@ -20,4 +20,8 @@ module T::Generic
   def type_template(variance=:invariant, fixed: nil, lower: T.untyped, upper: BasicObject)
     T::Types::TypeTemplate.new(variance) # rubocop:disable PrisonGuard/UseOpusTypesShortcut
   end
+
+  def experimental_attached_class_new(*args, &blk)
+    T.unsafe(self).send(:new, *args, &blk)
+  end
 end

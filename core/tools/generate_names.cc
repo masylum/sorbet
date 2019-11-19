@@ -120,6 +120,7 @@ NameDef names[] = {
     {"classOf", "class_of"},
     {"selfType", "self_type"},
     {"attachedClass", "experimental_attached_class"},
+    {"attachedClassNew", "experimental_attached_class_new"},
     {"coerce"},
 
     {"assertType", "assert_type!"},

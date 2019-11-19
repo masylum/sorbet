@@ -1135,33 +1135,6 @@ public:
     }
 } Class_new;
 
-/**
- * This is a special version of `new` that will return `T.attached_class`
- * instead.
- */
-class Class_selfNew : public IntrinsicMethod {
-public:
-    void apply(Context ctx, DispatchArgs args, const Type *thisType, DispatchResult &res) const override {
-        SymbolRef self = unwrapSymbol(thisType);
-
-        auto attachedClass = self.data(ctx)->findMember(ctx, core::Names::Constants::AttachedClass());
-        if (!attachedClass.exists()) {
-            return;
-        }
-        auto instanceTy = make_type<SelfTypeParam>(attachedClass);
-        DispatchArgs innerArgs{Names::initialize(), args.locs, args.args, instanceTy, instanceTy, args.block};
-        auto dispatched = instanceTy->dispatchCall(ctx, innerArgs);
-
-        for (auto &err : res.main.errors) {
-            dispatched.main.errors.emplace_back(std::move(err));
-        }
-        res.main.errors.clear();
-        res.returnType = instanceTy;
-        res.main = move(dispatched.main);
-        res.main.sendTp = instanceTy;
-    }
-} Class_selfNew;
-
 class T_Generic_squareBrackets : public IntrinsicMethod {
 public:
     void apply(Context ctx, DispatchArgs args, const Type *thisType, DispatchResult &res) const override {
@@ -1262,6 +1235,33 @@ public:
         res.returnType = make_type<MetaType>(make_type<AppliedType>(attachedClass, move(targs)));
     }
 } T_Generic_squareBrackets;
+
+/**
+ * This is a special version of `new` that will return `T.attached_class`
+ * instead.
+ */
+class T_Generic_attachedClassNew : public IntrinsicMethod {
+public:
+    void apply(Context ctx, DispatchArgs args, const Type *thisType, DispatchResult &res) const override {
+        SymbolRef self = unwrapSymbol(thisType);
+
+        auto attachedClass = self.data(ctx)->findMember(ctx, core::Names::Constants::AttachedClass());
+        if (!attachedClass.exists()) {
+            return;
+        }
+        auto instanceTy = make_type<SelfTypeParam>(attachedClass);
+        DispatchArgs innerArgs{Names::initialize(), args.locs, args.args, instanceTy, instanceTy, args.block};
+        auto dispatched = instanceTy->dispatchCall(ctx, innerArgs);
+
+        for (auto &err : res.main.errors) {
+            dispatched.main.errors.emplace_back(std::move(err));
+        }
+        res.main.errors.clear();
+        res.returnType = instanceTy;
+        res.main = move(dispatched.main);
+        res.main.sendTp = instanceTy;
+    }
+} T_Generic_attachedClassNew;
 
 class Magic_buildHash : public IntrinsicMethod {
 public:
@@ -2125,6 +2125,7 @@ const vector<Intrinsic> intrinsicMethods{
     {Symbols::T(), Intrinsic::Kind::Singleton, Names::proc(), &T_proc},
 
     {Symbols::T_Generic(), Intrinsic::Kind::Instance, Names::squareBrackets(), &T_Generic_squareBrackets},
+    {Symbols::T_Generic(), Intrinsic::Kind::Instance, Names::attachedClassNew(), &T_Generic_attachedClassNew},
 
     {Symbols::T_Array(), Intrinsic::Kind::Singleton, Names::squareBrackets(), &T_Generic_squareBrackets},
     {Symbols::T_Hash(), Intrinsic::Kind::Singleton, Names::squareBrackets(), &T_Generic_squareBrackets},
@@ -2137,7 +2138,6 @@ const vector<Intrinsic> intrinsicMethods{
     {Symbols::Object(), Intrinsic::Kind::Instance, Names::singletonClass(), &Object_class},
 
     {Symbols::Class(), Intrinsic::Kind::Instance, Names::new_(), &Class_new},
-    {Symbols::Class(), Intrinsic::Kind::Instance, Names::selfNew(), &Class_selfNew},
 
     {Symbols::Magic(), Intrinsic::Kind::Singleton, Names::buildHash(), &Magic_buildHash},
     {Symbols::Magic(), Intrinsic::Kind::Singleton, Names::buildArray(), &Magic_buildArray},
